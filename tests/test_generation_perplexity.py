@@ -12,8 +12,8 @@ from typing import List, Tuple
 # allow running this test directly from tests/
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model_n_gram.model import NGramLanguageModel, BOS, EOS, UNK
-from model_n_gram.tokenizer import Tokenizer
+from model import NGramLanguageModel, BOS, EOS, UNK
+from tokenizer import Tokenizer
 
 
 def load_txt_file(path: str) -> list[str]:
