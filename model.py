@@ -76,7 +76,10 @@ class NGramLanguageModel:
         self,
         n: int = 3,
         vocab_size: int = 10000,
-        unk_cutoff: int = 1
+        unk_cutoff: int = 1,
+        smoothing: str = "mle",
+        k: float = 1.0,
+        lambdas: List[float] = None
     ):
         if n < 1:
             raise ValueError("n must be >= 1")
@@ -84,6 +87,21 @@ class NGramLanguageModel:
         self.n = n
         self.vocab_size = vocab_size
         self.unk_cutoff = unk_cutoff
+        self.smoothing = smoothing
+        self.k = k
+        # --- lambdas: if provided, must match `n`; otherwise default to uniform weights ---
+        if lambdas:
+            if len(lambdas) != n:
+                raise ValueError(f"Interpolation lambdas must have length n={n} (got {len(lambdas)})")
+            if any(x < 0 for x in lambdas):
+                raise ValueError("Interpolation lambdas must be non-negative")
+            total = sum(lambdas)
+            if total == 0:
+                raise ValueError("Interpolation lambdas must sum to a positive value")
+            # normalize to sum to 1.0
+            self.lambdas = [float(x) / total for x in lambdas]
+        else:
+            self.lambdas = [1.0 / n] * n
 
         self.vocab = set()
         self.ngram_counts = defaultdict(int)
@@ -111,12 +129,15 @@ class NGramLanguageModel:
             tokens = replace_unk(tokens, self.vocab)
             tokens = add_sentence_markers(tokens, self.n)
 
-            for i in range(len(tokens) - self.n + 1):
-                ngram = tuple(tokens[i:i + self.n])
-                context = ngram[:-1]
-
-                self.ngram_counts[ngram] += 1
-                self.context_counts[context] += 1
+            # populate counts for all orders (1..n) so interpolation/backoff can use them
+            for i in range(len(tokens)):
+                for k in range(1, self.n + 1):
+                    if i + k > len(tokens):
+                        break
+                    gram = tuple(tokens[i:i + k])
+                    context = gram[:-1]
+                    self.ngram_counts[gram] += 1
+                    self.context_counts[context] += 1
 
     # ---------------------------
     # Probability (MLE)
@@ -126,12 +147,50 @@ class NGramLanguageModel:
             raise ValueError("Invalid ngram length")
 
         context = ngram[:-1]
+        ngram_count = self.ngram_counts.get(ngram, 0)
         context_count = self.context_counts.get(context, 0)
 
-        if context_count == 0:
-            return 0.0
+        # ---- MLE ----
+        if self.smoothing == "mle":
+            if context_count == 0:
+                return 0.0
+            return ngram_count / context_count
 
-        return self.ngram_counts.get(ngram, 0) / context_count
+        # ---- Add-k smoothing ----
+        if self.smoothing == "add_k":
+            V = len(self.vocab)
+            k = self.k if self.k is not None else 1.0
+            return (ngram_count + k) / (context_count + k * V)
+
+        # ---- Interpolation ----
+        if self.smoothing == "interpolation":
+            if not self.lambdas:
+                raise ValueError("Interpolation requires lambdas")
+
+            prob = 0.0
+            V = len(self.vocab)
+
+            # interpolate over orders 1..n (unigram..n-gram)
+            for i in range(1, self.n + 1):
+                sub_ngram = ngram[-i:]
+                sub_context = sub_ngram[:-1]
+
+                num = self.ngram_counts.get(tuple(sub_ngram), 0)
+                den = self.context_counts.get(tuple(sub_context), 0)
+
+                if i == 1:
+                    # unigram with add-k smoothing (den may be 0; add-k handles it)
+                    k = self.k if self.k is not None else 1.0
+                    p = (num + k) / (den + k * V)
+                else:
+                    # higher-order: MLE (guard division)
+                    p = (num / den) if den > 0 else 0.0
+
+                prob += self.lambdas[i - 1] * p
+
+            return prob
+
+        raise ValueError("Unknown smoothing method")
 
     # ---------------------------
     # Sampling with backoff
@@ -191,6 +250,26 @@ class NGramLanguageModel:
             generated.append(next_word)
             context.append(next_word)
             context = context[-self.n + 1:]
+
+        # ---- fallback: if generation produced nothing or only punctuation, try a unigram/BOS-based fallback ----
+        cleaned = [w for w in generated if w != UNK and w not in SENT_END_PUNCT]
+        if not cleaned:
+            # try sampling once from BOS context
+            unigram_candidates = {}
+            for g, c in self.ngram_counts.items():
+                if len(g) == 1:
+                    tok = g[0]
+                    if tok not in {BOS, EOS, UNK} and tok.isalnum():
+                        unigram_candidates[tok] = unigram_candidates.get(tok, 0) + c
+
+            if unigram_candidates:
+                # pick most frequent unigram (deterministic fallback)
+                tok = max(unigram_candidates.items(), key=lambda x: x[1])[0]
+                return tok
+
+            # final fallback: try sampling from BOS context (may return EOS)
+            fb = self._sample_next(tuple([BOS] * (self.n - 1)))
+            return "" if fb in {EOS, UNK, None} else fb
 
         return " ".join(w for w in generated if w != UNK)
 
