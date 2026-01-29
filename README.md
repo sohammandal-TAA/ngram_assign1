@@ -1,1 +1,1 @@
-###This is a ngram implementation assignment.
+This is a ngram implementation assignment.
