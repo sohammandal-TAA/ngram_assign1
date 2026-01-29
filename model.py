@@ -2,7 +2,7 @@ import random
 import math
 from collections import defaultdict, Counter
 from typing import List, Tuple
-from .tokenizer import Tokenizer
+from tokenizer import Tokenizer
 
 
 # =========================
