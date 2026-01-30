@@ -1,19 +1,20 @@
-import random
-import math
-import re
+
 import sys
-import csv
-import json
-from datetime import datetime
 from pathlib import Path
-
-from typing import List, Tuple
-
 # allow running this test directly from tests/
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from model import NGramLanguageModel, BOS, EOS, UNK
 from tokenizer import Tokenizer
+from model import NGramLanguageModel, BOS, EOS, UNK
+import random
+import math
+import re
+import csv
+import json
+from datetime import datetime
+
+
+from typing import List, Tuple
 
 
 def load_txt_file(path: str) -> list[str]:
@@ -57,7 +58,8 @@ def test_generate_sample_and_perplexity_on_unseen_data(tmp_path):
         all_test_sents.extend(sent_tokenize_simple(p))
 
     tokenizer = Tokenizer()
-    test_sentences = [s for s in all_test_sents if len(tokenizer.tokenize(s)) >= 2]
+    test_sentences = [s for s in all_test_sents if len(
+        tokenizer.tokenize(s)) >= 2]
     if not test_sentences:
         test_sentences = ["a a a a", "the quick brown fox"]
 
@@ -109,6 +111,7 @@ def test_generate_sample_and_perplexity_on_unseen_data(tmp_path):
     assert cnt > 0
     assert not math.isinf(lp)
 
+
 def train_dev_test_split(sentences: List[str], train_ratio: float = 0.8, dev_ratio: float = 0.1, seed: int = 42) -> Tuple[List[str], List[str], List[str]]:
     """
     Splits sentences into train / dev / test.
@@ -141,9 +144,12 @@ if __name__ == "__main__":
     parser.add_argument("--vocab_size", type=int, default=None)
     parser.add_argument("--n", type=int, default=None)
     parser.add_argument("--unk_cutoff", type=int, default=None)
-    parser.add_argument("--k", type=float, default=None, help="add-k smoothing value")
-    parser.add_argument("--lambdas", type=str, default=None, help="comma-separated lambdas for interpolation")
-    parser.add_argument("--out_csv", type=str, default=None, help="If set, save the n | MLE | Add-k | Interpolation table to CSV")
+    parser.add_argument("--k", type=float, default=None,
+                        help="add-k smoothing value")
+    parser.add_argument("--lambdas", type=str, default=None,
+                        help="comma-separated lambdas for interpolation")
+    parser.add_argument("--out_csv", type=str, default=None,
+                        help="If set, save the n | MLE | Add-k | Interpolation table to CSV")
     args = parser.parse_args()
 
     def ask(name: str, cur, cast, default):
@@ -172,7 +178,8 @@ if __name__ == "__main__":
     # validate lambdas vs n early (if both provided)
     if lambdas is not None and args.n is not None:
         if len(lambdas) != args.n:
-            print(f"Error: provided --lambdas length={len(lambdas)} does not match --n={args.n}")
+            print(
+                f"Error: provided --lambdas length={len(lambdas)} does not match --n={args.n}")
             raise SystemExit(2)
 
     # --- prepare data ---
@@ -215,7 +222,6 @@ if __name__ == "__main__":
     print(f"  Dev:   {len(dev_paras)} paragraphs")
     print(f"  Test:  {len(test_paras)} paragraphs")
 
-
     tokenizer = Tokenizer()
 
     # show a short training-token sample (after tokenization, before UNK replacement)
@@ -229,14 +235,17 @@ if __name__ == "__main__":
     print(" ".join(sample_tokens) if sample_tokens else "(no training tokens)")
 
     # Train models with the requested hyperparameters
-    lm_mle = NGramLanguageModel(n=n, vocab_size=vocab_size, unk_cutoff=unk_cutoff, smoothing="mle")
+    lm_mle = NGramLanguageModel(
+        n=n, vocab_size=vocab_size, unk_cutoff=unk_cutoff, smoothing="mle", tokenizer=tokenizer)
     lm_mle.train(train_paras)
 
-    lm_addk = NGramLanguageModel(n=n, vocab_size=vocab_size, unk_cutoff=unk_cutoff, smoothing="add_k", k=k)
+    lm_addk = NGramLanguageModel(
+        n=n, vocab_size=vocab_size, unk_cutoff=unk_cutoff, smoothing="add_k", k=k, tokenizer=tokenizer)
     lm_addk.train(train_paras)
 
     interp_lambdas = lambdas if lambdas is not None else ([1.0 / n] * n)
-    lm_interp = NGramLanguageModel(n=n, vocab_size=vocab_size, unk_cutoff=unk_cutoff, smoothing="interpolation", k=k, lambdas=interp_lambdas)
+    lm_interp = NGramLanguageModel(n=n, vocab_size=vocab_size, unk_cutoff=unk_cutoff,
+                                   smoothing="interpolation", k=k, lambdas=interp_lambdas, tokenizer=tokenizer)
     lm_interp.train(train_paras)
 
     # vocab diagnostics
@@ -264,11 +273,12 @@ if __name__ == "__main__":
     print("\nText generated (seed=\"oh my\"):")
     print(f"  {gen}\n")
 
-    # prepare test sentences 
+    # prepare test sentences
     all_test_sents = []
     for p in test_paras:
         all_test_sents.extend(sent_tokenize_simple(p))
-    test_sentences = [s for s in all_test_sents if len(tokenizer.tokenize(s)) >= 2]
+    test_sentences = [s for s in all_test_sents if len(
+        tokenizer.tokenize(s)) >= 2]
     if not test_sentences:
         test_sentences = ["a a a a", "the quick brown fox"]
 
@@ -282,7 +292,8 @@ if __name__ == "__main__":
     print("Scores:")
     print(f"  Perplexity (MLE / no smoothing): {ppl_mle}")
     print(f"  Perplexity (Add-k, k={k}): {ppl_addk}")
-    print(f"  Perplexity (Interpolation, lambdas={interp_lambdas}): {ppl_interp}\n")
+    print(
+        f"  Perplexity (Interpolation, lambdas={interp_lambdas}): {ppl_interp}\n")
 
     # short interpretation
     print("Interpretation:")
@@ -291,15 +302,16 @@ if __name__ == "__main__":
     else:
         print(f"  - MLE perplexity: {ppl_mle:.2f}")
 
-    print(f"  - Add-k smoothing produced {'finite' if not math.isinf(ppl_addk) else 'infinite'} perplexity")
-    print(f"  - Interpolation produced {'finite' if not math.isinf(ppl_interp) else 'infinite'} perplexity")
+    print(
+        f"  - Add-k smoothing produced {'finite' if not math.isinf(ppl_addk) else 'infinite'} perplexity")
+    print(
+        f"  - Interpolation produced {'finite' if not math.isinf(ppl_interp) else 'infinite'} perplexity")
 
     # comparative note
     if not math.isinf(ppl_addk) and (math.isinf(ppl_mle) or ppl_addk <= ppl_mle):
         print("  => add-k helps on unseen data (lower or finite perplexity).")
     if not math.isinf(ppl_interp) and (math.isinf(ppl_mle) or ppl_interp <= ppl_mle):
         print("  => interpolation helps by mixing lower-order estimates.")
-
 
     print("\nPerplexity Table (n = 1,2,3):")
     print("n | MLE | Add-k | Interpolation")
@@ -311,7 +323,8 @@ if __name__ == "__main__":
             n=n_val,
             vocab_size=vocab_size,
             unk_cutoff=unk_cutoff,
-            smoothing="mle"
+            smoothing="mle",
+            tokenizer=tokenizer
         )
         lm_mle.train(train_paras)
 
@@ -320,7 +333,8 @@ if __name__ == "__main__":
             vocab_size=vocab_size,
             unk_cutoff=unk_cutoff,
             smoothing="add_k",
-            k=k
+            k=k,
+            tokenizer=tokenizer
         )
         lm_addk.train(train_paras)
 
@@ -330,7 +344,8 @@ if __name__ == "__main__":
             vocab_size=vocab_size,
             unk_cutoff=unk_cutoff,
             smoothing="interpolation",
-            lambdas=lambdas_n
+            lambdas=lambdas_n,
+            tokenizer=tokenizer
         )
         lm_interp.train(train_paras)
 
@@ -362,12 +377,13 @@ if __name__ == "__main__":
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         # write CSV
-        with out_path.open("w", newline="", encoding="utf-8") as f:
+        with out_path.open("a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["n", "mle", "add_k", "interpolation"])
             for r in table_rows:
                 mle_val = "inf" if r["mle"] is None else f"{r['mle']:.6f}"
-                writer.writerow([r["n"], mle_val, f"{r['add_k']:.6f}", f"{r['interpolation']:.6f}"])
+                writer.writerow(
+                    [r["n"], mle_val, f"{r['add_k']:.6f}", f"{r['interpolation']:.6f}"])
 
         # write metadata sidecar
         meta = {
@@ -380,10 +396,10 @@ if __name__ == "__main__":
             "rows": len(table_rows),
         }
         meta_path = out_path.with_suffix(out_path.suffix + ".meta.json")
-        with meta_path.open("w", encoding="utf-8") as mf:
+        with meta_path.open("a", encoding="utf-8") as mf:
             json.dump(meta, mf, indent=2)
 
-        print(f"\nSaved perplexity table to: {out_path}\n  (metadata: {meta_path})")
+        print(
+            f"\nSaved perplexity table to: {out_path}\n  (metadata: {meta_path})")
 
     print("\nDone.")
-
