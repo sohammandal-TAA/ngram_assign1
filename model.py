@@ -1,12 +1,10 @@
 import random
 import math
 from collections import defaultdict, Counter
-from typing import List, Tuple
-from tokenizer import Tokenizer
-
+from typing import List, Tuple, Optional
 
 # =========================
-# GLOBAL SPECIAL TOKENS
+# SPECIAL TOKENS
 # =========================
 BOS = "<BOS>"
 EOS = "<EOS>"
@@ -14,307 +12,285 @@ UNK = "<UNK>"
 
 
 # =========================
-# GLOBAL TOKENIZER CONFIG
-# =========================
-TOKENIZER = Tokenizer(
-    lowercase=True,
-    remove_punctuation=True,
-    remove_special_chars=True,
-    remove_numbers=False,
-    remove_apostrophes=True
-)
-
-
-# =========================
 # UTILITY FUNCTIONS
 # =========================
 def build_vocabulary(
     tokens: List[str],
-    vocab_size: int = 10000,
-    unk_cutoff: int = 1
+    vocab_size: int,
+    unk_cutoff: int
 ) -> Tuple[set, Counter]:
-    """
-    Build vocabulary using frequency cutoff and max size.
-    """
     counter = Counter(tokens)
 
-    # Remove rare words
+    # Keep words strictly above cutoff
     filtered = {w: c for w, c in counter.items() if c > unk_cutoff}
 
-    # Keep top-k most frequent words
     most_common = Counter(filtered).most_common(vocab_size)
-
     vocab = set(w for w, _ in most_common)
-    vocab.update({UNK, BOS, EOS})
+    vocab.update({BOS, EOS, UNK})
 
     return vocab, counter
 
 
 def replace_unk(tokens: List[str], vocab: set) -> List[str]:
-    """
-    Replace tokens not in vocabulary with <UNK>.
-    """
     return [t if t in vocab else UNK for t in tokens]
 
 
 def add_sentence_markers(tokens: List[str], n: int) -> List[str]:
-    """
-    Add BOS and EOS markers to a token sequence.
-    """
     return [BOS] * (n - 1) + tokens + [EOS]
+
+def load_txt_corpus(path: str) -> List[str]:
+    """Load .txt file as a corpus"""
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read().strip()
+
+    if not text:
+        raise ValueError("Text file is empty.")
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return lines
+
+
+def split_80_20(lines: List[str]):
+    """ Split the corpus intwo 80 % lines for traning and 20 % for testing"""
+    if len(lines) < 2:
+        return lines, lines
+
+    split_idx = int(len(lines) * 0.8)
+    return lines[:split_idx], lines[split_idx:]
+
+# =========================
+# PROBABILITY FUNCTIONS
+# =========================
+def mle_probability(
+    ngram: Tuple[str, ...],
+    ngram_counts: dict,
+    context_counts: dict
+) -> float:
+    context = ngram[:-1]
+    den = context_counts.get(context, 0)
+    if den == 0:
+        return 0.0
+    return ngram_counts.get(ngram, 0) / den
+
+
+def add_k_probability(
+    ngram: Tuple[str, ...],
+    ngram_counts: dict,
+    context_counts: dict,
+    vocab_size: int,
+    k: float
+) -> float:
+    context = ngram[:-1]
+    num = ngram_counts.get(ngram, 0)
+    den = context_counts.get(context, 0)
+    return (num + k) / (den + k * vocab_size)
+
+
+def interpolated_probability(
+    ngram: Tuple[str, ...],
+    ngram_counts: dict,
+    context_counts: dict,
+    vocab_size: int,
+    lambdas: List[float],
+    k: float
+) -> float:
+    n = len(ngram)
+    prob = 0.0
+
+    for i in range(1, n + 1):
+        sub = ngram[-i:]
+        context = sub[:-1]
+
+        if i == 1:
+            p = add_k_probability(sub, ngram_counts, context_counts, vocab_size, k)
+        else:
+            den = context_counts.get(context, 0)
+            p = (ngram_counts.get(sub, 0) / den) if den > 0 else 0.0
+
+        prob += lambdas[i - 1] * p
+
+    return prob
 
 
 # =========================
 # N-GRAM LANGUAGE MODEL
 # =========================
 class NGramLanguageModel:
-    """
-    N-gram Language Model using Maximum Likelihood Estimation (MLE)
-    """
-
     def __init__(
         self,
-        n: int = 3,
+        n: int,
+        tokenizer,
         vocab_size: int = 10000,
         unk_cutoff: int = 1,
         smoothing: str = "mle",
         k: float = 1.0,
-        lambdas: List[float] = None
+        lambdas: Optional[List[float]] = None,
+        rng: Optional[random.Random] = None
     ):
         if n < 1:
             raise ValueError("n must be >= 1")
 
         self.n = n
+        self.tokenizer = tokenizer
         self.vocab_size = vocab_size
         self.unk_cutoff = unk_cutoff
         self.smoothing = smoothing
         self.k = k
-        # --- lambdas: if provided, must match `n`; otherwise default to uniform weights ---
-        if lambdas:
-            if len(lambdas) != n:
-                raise ValueError(f"Interpolation lambdas must have length n={n} (got {len(lambdas)})")
-            if any(x < 0 for x in lambdas):
-                raise ValueError("Interpolation lambdas must be non-negative")
-            total = sum(lambdas)
-            if total == 0:
-                raise ValueError("Interpolation lambdas must sum to a positive value")
-            # normalize to sum to 1.0
-            self.lambdas = [float(x) / total for x in lambdas]
+        self.rng = rng or random.Random()
+
+        if smoothing == "interpolation":
+            if not lambdas or len(lambdas) != n:
+                raise ValueError("Interpolation lambdas must match n")
+            s = sum(lambdas)
+            self.lambdas = [x / s for x in lambdas]
         else:
-            self.lambdas = [1.0 / n] * n
+            self.lambdas = None
 
         self.vocab = set()
         self.ngram_counts = defaultdict(int)
         self.context_counts = defaultdict(int)
 
     # ---------------------------
-    # Training
+    # TRAINING
     # ---------------------------
     def train(self, texts: List[str]) -> None:
         all_tokens = []
-        tokenized_texts = []
+        tokenized = []
 
         for text in texts:
-            tokens = TOKENIZER.tokenize(text)
-            tokenized_texts.append(tokens)
-            all_tokens.extend(tokens)
+            toks = self.tokenizer.tokenize(text)
+            tokenized.append(toks)
+            all_tokens.extend(toks)
 
         self.vocab, _ = build_vocabulary(
-            all_tokens,
-            vocab_size=self.vocab_size,
-            unk_cutoff=self.unk_cutoff
+            all_tokens, self.vocab_size, self.unk_cutoff
         )
 
-        for tokens in tokenized_texts:
-            tokens = replace_unk(tokens, self.vocab)
-            tokens = add_sentence_markers(tokens, self.n)
+        for toks in tokenized:
+            toks = replace_unk(toks, self.vocab)
+            toks = add_sentence_markers(toks, self.n)
 
-            # populate counts for all orders (1..n) so interpolation/backoff can use them
-            for i in range(len(tokens)):
+            for i in range(len(toks)):
                 for k in range(1, self.n + 1):
-                    if i + k > len(tokens):
+                    if i + k > len(toks):
                         break
-                    gram = tuple(tokens[i:i + k])
-                    context = gram[:-1]
+                    gram = tuple(toks[i:i + k])
                     self.ngram_counts[gram] += 1
-                    self.context_counts[context] += 1
+                    self.context_counts[gram[:-1]] += 1
 
     # ---------------------------
-    # Probability (MLE)
+    # PROBABILITY
     # ---------------------------
     def probability(self, ngram: Tuple[str, ...]) -> float:
-        if len(ngram) != self.n:
-            raise ValueError("Invalid ngram length")
-
-        context = ngram[:-1]
-        ngram_count = self.ngram_counts.get(ngram, 0)
-        context_count = self.context_counts.get(context, 0)
-
-        # ---- MLE ----
         if self.smoothing == "mle":
-            if context_count == 0:
-                return 0.0
-            return ngram_count / context_count
+            return mle_probability(ngram, self.ngram_counts, self.context_counts)
 
-        # ---- Add-k smoothing ----
         if self.smoothing == "add_k":
-            V = len(self.vocab)
-            k = self.k if self.k is not None else 1.0
-            return (ngram_count + k) / (context_count + k * V)
+            return add_k_probability(
+                ngram, self.ngram_counts, self.context_counts, len(self.vocab), self.k
+            )
 
-        # ---- Interpolation ----
         if self.smoothing == "interpolation":
-            if not self.lambdas:
-                raise ValueError("Interpolation requires lambdas")
+            return interpolated_probability(
+                ngram,
+                self.ngram_counts,
+                self.context_counts,
+                len(self.vocab),
+                self.lambdas,
+                self.k
+            )
 
-            prob = 0.0
-            V = len(self.vocab)
-
-            # interpolate over orders 1..n (unigram..n-gram)
-            for i in range(1, self.n + 1):
-                sub_ngram = ngram[-i:]
-                sub_context = sub_ngram[:-1]
-
-                num = self.ngram_counts.get(tuple(sub_ngram), 0)
-                den = self.context_counts.get(tuple(sub_context), 0)
-
-                if i == 1:
-                    # unigram with add-k smoothing (den may be 0; add-k handles it)
-                    k = self.k if self.k is not None else 1.0
-                    p = (num + k) / (den + k * V)
-                else:
-                    # higher-order: MLE (guard division)
-                    p = (num / den) if den > 0 else 0.0
-
-                prob += self.lambdas[i - 1] * p
-
-            return prob
-
-        raise ValueError("Unknown smoothing method")
+        raise ValueError("Unknown smoothing")
 
     # ---------------------------
-    # Sampling with backoff
+    # SAMPLING (TESTABLE)
     # ---------------------------
     def _sample_next(self, context: Tuple[str, ...]) -> str:
         """
-        Backoff sampling: try shorter contexts if unseen.
+        Sample next word using model probability()
+        (respects MLE / add-k / interpolation)
         """
-        for k in range(len(context)):
-            sub_context = context[k:]
+        context = tuple(context[-(self.n - 1):])
 
-            candidates = []
-            weights = []
+        candidates = []
+        probs = []
 
-            for ngram, count in self.ngram_counts.items():
-                if ngram[:-1] == sub_context:
-                    candidates.append(ngram[-1])
-                    weights.append(count)
+        for word in self.vocab:
+            if word == BOS:
+                continue
 
-            if candidates:
-                return random.choices(candidates, weights=weights, k=1)[0]
+            ngram = context + (word,)
+            p = self.probability(ngram)
 
-        return EOS
+            if p > 0:
+                candidates.append(word)
+                probs.append(p)
+
+        if not candidates:
+            # fallback: pick random word (excluding BOS)
+            candidates = [w for w in self.vocab if w != BOS]
+            probs = [1.0 / len(candidates)] * len(candidates)
+
+        # Normalize probabilities
+        total = sum(probs)
+        if total > 0:
+            probs = [p / total for p in probs]
+        else:
+            # fallback uniform if all probs are zero
+            probs = [1.0 / len(candidates)] * len(candidates)
+
+        return self.rng.choices(candidates, weights=probs, k=1)[0]
 
     # ---------------------------
-    # Text Generation
+    # GENERATION
     # ---------------------------
-    def generate(
-        self,
-        max_length: int = 50,
-        seed: List[str] = None
-    ) -> str:
-
-        SENT_END_PUNCT = {".", "!", "?"}
-
-        # ---- Initialize context ----
+    def generate(self, max_length: int = 50, seed: Optional[List[str]] = None) -> str:
         if seed is None:
             context = [BOS] * (self.n - 1)
-            generated = []
+            output = []
         else:
             seed = replace_unk(seed, self.vocab)
             context = ([BOS] * (self.n - 1) + seed)[-self.n + 1:]
-            generated = seed.copy()
+            output = seed.copy()
 
-        # ---- Generate tokens ----
         for _ in range(max_length):
-            next_word = self._sample_next(tuple(context))
+            word = self._sample_next(tuple(context))
+            if word == EOS:
+                break
+            output.append(word)
+            context = (context + [word])[-self.n + 1:]
 
-            if next_word == EOS:
-                # ✔ Add period only if last token isn't punctuation
-                if generated and generated[-1] not in SENT_END_PUNCT:
-                    generated.append(".")
-                # ✔ Reset context for next sentence
-                context = [BOS] * (self.n - 1)
-                continue
-
-            generated.append(next_word)
-            context.append(next_word)
-            context = context[-self.n + 1:]
-
-        # ---- fallback: if generation produced nothing or only punctuation, try a unigram/BOS-based fallback ----
-        cleaned = [w for w in generated if w != UNK and w not in SENT_END_PUNCT]
-        if not cleaned:
-            # try sampling once from BOS context
-            unigram_candidates = {}
-            for g, c in self.ngram_counts.items():
-                if len(g) == 1:
-                    tok = g[0]
-                    if tok not in {BOS, EOS, UNK} and tok.isalnum():
-                        unigram_candidates[tok] = unigram_candidates.get(tok, 0) + c
-
-            if unigram_candidates:
-                # pick most frequent unigram (deterministic fallback)
-                tok = max(unigram_candidates.items(), key=lambda x: x[1])[0]
-                return tok
-
-            # final fallback: try sampling from BOS context (may return EOS)
-            fb = self._sample_next(tuple([BOS] * (self.n - 1)))
-            return "" if fb in {EOS, UNK, None} else fb
-
-        return " ".join(w for w in generated if w != UNK)
-
-
+        return " ".join(w for w in output if w != UNK)
 
     # ---------------------------
-    # Sentence log-probability
+    # PERPLEXITY
     # ---------------------------
     def sentence_log_probability(self, sentence: str) -> Tuple[float, int]:
-        tokens = TOKENIZER.tokenize(sentence)
-        tokens = replace_unk(tokens, self.vocab)
-        tokens = add_sentence_markers(tokens, self.n)
+        toks = self.tokenizer.tokenize(sentence)
+        toks = replace_unk(toks, self.vocab)
+        toks = add_sentence_markers(toks, self.n)
 
-        log_prob = 0.0
+        log_p = 0.0
         count = 0
 
-        for i in range(len(tokens) - self.n + 1):
-            ngram = tuple(tokens[i:i + self.n])
-            prob = self.probability(ngram)
-
-            if prob == 0:
-                return float("-inf"), 0
-
-            log_prob += math.log(prob)
+        for i in range(len(toks) - self.n + 1):
+            p = self.probability(tuple(toks[i:i + self.n]))
+            if p == 0:
+                return float("-inf"), count
+            log_p += math.log(p)
             count += 1
 
-        return log_prob, count
+        return log_p, count
 
-    # ---------------------------
-    # Perplexity
-    # ---------------------------
     def perplexity(self, texts: List[str]) -> float:
-        total_log_prob = 0.0
-        total_ngrams = 0
+        total_lp = 0.0
+        total_n = 0
 
-        for text in texts:
-            log_prob, count = self.sentence_log_probability(text)
-
-            if log_prob == float("-inf"):
+        for t in texts:
+            lp, c = self.sentence_log_probability(t)
+            if lp == float("-inf"):
                 return float("inf")
+            total_lp += lp
+            total_n += c
 
-            total_log_prob += log_prob
-            total_ngrams += count
-
-        if total_ngrams == 0:
-            return float("inf")
-
-        return math.exp(-total_log_prob / total_ngrams)
+        return math.exp(-total_lp / total_n) if total_n > 0 else float("inf")
