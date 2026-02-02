@@ -2,7 +2,9 @@ import random
 import math
 from collections import defaultdict, Counter
 from typing import List, Tuple, Optional
-
+from dataclasses import dataclass
+from typing import Optional, List
+import pickle
 # =========================
 # SPECIAL TOKENS
 # =========================
@@ -23,7 +25,7 @@ def build_vocabulary(
     counter = Counter(tokens)
 
 # Keep words strictly above cutoff
-    filtered = {w: c for w, c in counter.items() if c > unk_cutoff}
+    filtered = {w: c for w, c in counter.items() if c >= unk_cutoff}
 
     most_common = Counter(filtered).most_common(vocab_size)
     vocab = set(w for w, _ in most_common)
@@ -120,11 +122,19 @@ def interpolated_probability(
 
     return prob
 
+@dataclass(frozen=True)
+class ModelConfig:
+    n: int
+    vocab_size: int = 10000
+    unk_cutoff: int = 1
+    smoothing: str = "mle"
+    k: float = 1.0
+    lambdas: Optional[List[float]] = None
 
 class NGramLanguageModel:
     def __init__(
         self,
-        n: int,
+        n: int | ModelConfig,
         tokenizer=None,
         vocab_size: int = 10000,
         unk_cutoff: int = 1,
@@ -133,11 +143,22 @@ class NGramLanguageModel:
         lambdas: Optional[List[float]] = None,
         rng: Optional[random.Random] = None,
     ):
+        # ---------------------------
+        # ModelConfig compatibility
+        # ---------------------------
+        if isinstance(n, ModelConfig):
+            config = n
+            n = config.n
+            vocab_size = config.vocab_size
+            unk_cutoff = config.unk_cutoff
+            smoothing = config.smoothing
+            k = config.k
+            lambdas = config.lambdas
+
         if n < 1:
             raise ValueError("n must be >= 1")
 
         self.n = n
-
         # Import tokenizer here to avoid circular imports
         if tokenizer is None:
             try:
@@ -167,7 +188,13 @@ class NGramLanguageModel:
         self.vocab = set()
         self.ngram_counts = defaultdict(int)
         self.context_counts = defaultdict(int)
-
+     
+    # ---------------------------
+    def _build_vocab(self, tokenized_texts):
+        all_tokens = [t for sent in tokenized_texts for t in sent]
+        self.vocab, _ = build_vocabulary(
+            all_tokens, self.vocab_size, self.unk_cutoff
+        )
     # ---------------------------
     # TRAINING
     # ---------------------------
@@ -321,3 +348,14 @@ class NGramLanguageModel:
             total_n += c
 
         return math.exp(-total_lp / total_n) if total_n > 0 else float("inf")
+
+    def save(self, path):
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, path, tokenizer):
+        with open(path, "rb") as f:
+            model = pickle.load(f)
+        model.tokenizer = tokenizer
+        return model
