@@ -11,6 +11,7 @@ EOS = "<EOS>"
 UNK = "<UNK>"
 
 
+
 # =========================
 # UTILITY FUNCTIONS
 # =========================
@@ -18,10 +19,10 @@ def build_vocabulary(
     tokens: List[str],
     vocab_size: int,
     unk_cutoff: int
-) -> Tuple[set, Counter]:
+    ) -> Tuple[set, Counter]:
     counter = Counter(tokens)
 
-    # Keep words strictly above cutoff
+# Keep words strictly above cutoff
     filtered = {w: c for w, c in counter.items() if c > unk_cutoff}
 
     most_common = Counter(filtered).most_common(vocab_size)
@@ -31,8 +32,10 @@ def build_vocabulary(
     return vocab, counter
 
 
+
 def replace_unk(tokens: List[str], vocab: set) -> List[str]:
     return [t if t in vocab else UNK for t in tokens]
+
 
 
 def add_sentence_markers(tokens: List[str], n: int) -> List[str]:
@@ -50,6 +53,7 @@ def load_txt_corpus(path: str) -> List[str]:
     return lines
 
 
+
 def split_80_20(lines: List[str]):
     """ Split the corpus intwo 80 % lines for traning and 20 % for testing"""
     if len(lines) < 2:
@@ -65,12 +69,13 @@ def mle_probability(
     ngram: Tuple[str, ...],
     ngram_counts: dict,
     context_counts: dict
-) -> float:
+    ) -> float:
     context = ngram[:-1]
     den = context_counts.get(context, 0)
     if den == 0:
         return 0.0
     return ngram_counts.get(ngram, 0) / den
+
 
 
 def add_k_probability(
@@ -79,11 +84,12 @@ def add_k_probability(
     context_counts: dict,
     vocab_size: int,
     k: float
-) -> float:
+    ) -> float:
     context = ngram[:-1]
     num = ngram_counts.get(ngram, 0)
     den = context_counts.get(context, 0)
     return (num + k) / (den + k * vocab_size)
+
 
 
 def interpolated_probability(
@@ -99,10 +105,13 @@ def interpolated_probability(
 
     for i in range(1, n + 1):
         sub = ngram[-i:]
-        context = sub[:-1]
+        context = sub[:-1] if len(sub) > 1 else tuple()
 
         if i == 1:
-            p = add_k_probability(sub, ngram_counts, context_counts, vocab_size, k)
+            # unigram: add-k smoothing
+            p = add_k_probability(
+                sub, ngram_counts, context_counts, vocab_size, k
+            )
         else:
             den = context_counts.get(context, 0)
             p = (ngram_counts.get(sub, 0) / den) if den > 0 else 0.0
@@ -112,26 +121,35 @@ def interpolated_probability(
     return prob
 
 
-# =========================
-# N-GRAM LANGUAGE MODEL
-# =========================
 class NGramLanguageModel:
     def __init__(
         self,
         n: int,
-        tokenizer,
+        tokenizer=None,
         vocab_size: int = 10000,
         unk_cutoff: int = 1,
         smoothing: str = "mle",
         k: float = 1.0,
         lambdas: Optional[List[float]] = None,
-        rng: Optional[random.Random] = None
+        rng: Optional[random.Random] = None,
     ):
         if n < 1:
             raise ValueError("n must be >= 1")
 
         self.n = n
-        self.tokenizer = tokenizer
+
+        # Import tokenizer here to avoid circular imports
+        if tokenizer is None:
+            try:
+                from tokenizer import Tokenizer
+                self.tokenizer = Tokenizer()
+            except ImportError:
+                raise ValueError(
+                    "tokenizer must be provided if tokenizer module is not available"
+                )
+        else:
+            self.tokenizer = tokenizer
+
         self.vocab_size = vocab_size
         self.unk_cutoff = unk_cutoff
         self.smoothing = smoothing
@@ -174,20 +192,29 @@ class NGramLanguageModel:
                 for k in range(1, self.n + 1):
                     if i + k > len(toks):
                         break
-                    gram = tuple(toks[i:i + k])
+                    gram = tuple(toks[i : i + k])
                     self.ngram_counts[gram] += 1
-                    self.context_counts[gram[:-1]] += 1
+
+                    # For unigrams, context is empty tuple
+                    context = gram[:-1] if len(gram) > 1 else tuple()
+                    self.context_counts[context] += 1
 
     # ---------------------------
     # PROBABILITY
     # ---------------------------
     def probability(self, ngram: Tuple[str, ...]) -> float:
         if self.smoothing == "mle":
-            return mle_probability(ngram, self.ngram_counts, self.context_counts)
+            return mle_probability(
+                ngram, self.ngram_counts, self.context_counts
+            )
 
         if self.smoothing == "add_k":
             return add_k_probability(
-                ngram, self.ngram_counts, self.context_counts, len(self.vocab), self.k
+                ngram,
+                self.ngram_counts,
+                self.context_counts,
+                len(self.vocab),
+                self.k,
             )
 
         if self.smoothing == "interpolation":
@@ -197,7 +224,7 @@ class NGramLanguageModel:
                 self.context_counts,
                 len(self.vocab),
                 self.lambdas,
-                self.k
+                self.k,
             )
 
         raise ValueError("Unknown smoothing")
@@ -210,7 +237,7 @@ class NGramLanguageModel:
         Sample next word using model probability()
         (respects MLE / add-k / interpolation)
         """
-        context = tuple(context[-(self.n - 1):])
+        context = tuple(context[-(self.n - 1) :])
 
         candidates = []
         probs = []
@@ -236,7 +263,6 @@ class NGramLanguageModel:
         if total > 0:
             probs = [p / total for p in probs]
         else:
-            # fallback uniform if all probs are zero
             probs = [1.0 / len(candidates)] * len(candidates)
 
         return self.rng.choices(candidates, weights=probs, k=1)[0]
@@ -244,13 +270,14 @@ class NGramLanguageModel:
     # ---------------------------
     # GENERATION
     # ---------------------------
-    def generate(self, max_length: int = 50, seed: Optional[List[str]] = None) -> str:
+    def generate(
+        self, max_length: int = 50, seed: Optional[List[str]] = None
+    ) -> str:
         if seed is None:
             context = [BOS] * (self.n - 1)
             output = []
         else:
-            seed = replace_unk(seed, self.vocab)
-            context = ([BOS] * (self.n - 1) + seed)[-self.n + 1:]
+            context = ([BOS] * (self.n - 1) + seed)[-self.n + 1 :]
             output = seed.copy()
 
         for _ in range(max_length):
@@ -258,7 +285,7 @@ class NGramLanguageModel:
             if word == EOS:
                 break
             output.append(word)
-            context = (context + [word])[-self.n + 1:]
+            context = (context + [word])[-self.n + 1 :]
 
         return " ".join(w for w in output if w != UNK)
 
@@ -274,7 +301,7 @@ class NGramLanguageModel:
         count = 0
 
         for i in range(len(toks) - self.n + 1):
-            p = self.probability(tuple(toks[i:i + self.n]))
+            p = self.probability(tuple(toks[i : i + self.n]))
             if p == 0:
                 return float("-inf"), count
             log_p += math.log(p)
