@@ -1,62 +1,38 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import pytest
 from tokenizer import Tokenizer
 
+class TestTokenizer:
+    def test_tokenize_with_numbers(self):
+        tokenizer = Tokenizer(lowercase=True, remove_punctuation=True)
+        text = "The price is $19.99."
+        expected_tokens = ["the", "price", "is", "1999"]
+        assert tokenizer.tokenize(text) == expected_tokens
 
-def run_test(text, tokenizer):
-    config = tokenizer.explain()
-    print("Tokenizer config:", config)
-    print("Original text   :", text)
-    print("Tokenized output:", tokenizer.tokenize(text))
-    print("-" * 50)
+    def test_tokenize_no_lowercase_or_punctuation(self):
+        tokenizer = Tokenizer(lowercase=False, remove_punctuation=False)
+        text = "This is a Test!"
+        expected_tokens = ["This", "is", "a", "Test!"]
+        assert tokenizer.tokenize(text) == expected_tokens
 
+    def test_tokenize_lowercase(self):
+        tokenizer = Tokenizer(lowercase=True, remove_punctuation=False)
+        assert tokenizer.tokenize("HELLO WORLD") == ["hello", "world"]
 
-if __name__ == "__main__":
+    def test_tokenize_with_punctuation(self):
+        tokenizer = Tokenizer(lowercase=True, remove_punctuation=True)
+        text = "Wait... what? (This is fun!)"
+        expected = ["wait", "what", "this", "is", "fun"]
+        assert tokenizer.tokenize(text) == expected
 
-    print("=== Test 1 ===")
-    t = Tokenizer()
-    run_test("Hello, world! It's 2024.", t)
+    def test_tokenize_empty_text(self):
+        tokenizer = Tokenizer()
+        assert tokenizer.tokenize("") == []
+        assert tokenizer.tokenize("   ") == []
 
-    print("=== Test 2 ===")
-    t = Tokenizer(remove_numbers=True)
-    run_test("I have 2 dogs and 3 cats", t)
-
-    print("=== Test 3 ===")
-    t = Tokenizer(lowercase=False)
-    run_test("Hello World", t)
-
-    print("=== Test 4 ===")
-    t = Tokenizer(remove_apostrophes=False)
-    run_test("Don't stop believing", t)
-
-    print("=== Test 5 ===")
-    t = Tokenizer(remove_punctuation=False)
-    run_test("Hello, world!", t)
-
-    print("=== Test 6 ===")
-    t = Tokenizer()
-    run_test("Email me @ test@example.com!", t)
-
-    print("=== Test 7 ===")
-    t = Tokenizer()
-    run_test("Hello     world\n\nNLP", t)
-
-    print("=== Test 8 ===")
-    t = Tokenizer()
-    run_test("", t)
-
-    print("=== Test 9: tokenize_sentences ===")
-    t = Tokenizer()
-    sentences = [
-        "Hello World!",
-        "NLP is fun.",
-        "Let's tokenize text."
-    ]
-
-    print("Tokenizer config:", t.explain())
-    for s, tokens in zip(sentences, t.tokenize_sentences(sentences)):
-        print("Original text   :", s)
-        print("Tokenized output:", tokens)
-        print("-" * 50)
-
-    print("=== Test 10 ===")
-    t = Tokenizer(lowercase=False, remove_numbers=True, remove_apostrophes=False)
-    run_test("Testing 123 tokenizer's CONFIG!", t)
+    def test_whitespace_handling(self):
+        tokenizer = Tokenizer()
+        text = "Words\twith\nnewlines  and   tabs."
+        assert len(tokenizer.tokenize(text)) == 5
